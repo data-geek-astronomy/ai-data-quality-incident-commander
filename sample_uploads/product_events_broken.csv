@@ -1,0 +1,13 @@
+event_id,user_id,event_name,session_duration,event_time,platform
+evt_70001,user_501,signup,184.2,2026-07-03 08:00:00,web
+evt_70002,user_502,search,0,2026-07-03 09:00:00,ios
+evt_70003,user_503,checkout,0,2026-07-03 10:00:00,android
+evt_70004,user_504,cancel,0,not-a-date,unknown_sdk
+evt_70005,user_505,search,0,2026-07-03 12:00:00,unknown_sdk
+evt_70006,user_506,checkout,0,2026-07-03 13:00:00,web
+evt_70007,user_507,refund_requested,0,2026-07-03 14:00:00,unknown_sdk
+evt_70008,user_508,search,0,not-a-date,ios
+evt_70009,user_509,checkout,0,2026-07-03 16:00:00,android
+evt_70009,user_509,checkout,0,2026-07-03 16:00:00,android
+evt_70010,user_510,signup,0,2026-07-03 17:00:00,unknown_sdk
+evt_70011,user_511,search,0,2026-07-03 18:00:00,web

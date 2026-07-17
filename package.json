@@ -1,0 +1,13 @@
+{
+  "name": "ai-data-quality-incident-commander",
+  "version": "1.0.0",
+  "description": "Full-stack AI data reliability app for detecting data quality incidents, recommending fixes, and generating postmortems.",
+  "main": "index.js",
+  "scripts": {
+    "test": "cd backend && python -m pytest",
+    "build": "cd frontend && npm run build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

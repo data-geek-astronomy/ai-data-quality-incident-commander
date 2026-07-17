@@ -1,0 +1,13 @@
+payment_id,amount,payment_status,processed_at,processor
+pay_90001,125.40,settled,2026-07-02 08:00:00,stripe
+pay_90002,118.00,settled,2026-07-02 09:00:00,adyen
+pay_90003,-145.22,settled,2026-07-02 10:00:00,stripe
+pay_90004,-99.14,review,2026-07-02 11:00:00,unknown_gateway
+pay_90005,151.00,settled,2026-07-02 12:00:00,unknown_gateway
+pay_90006,139.22,failed,not-a-date,paypal
+pay_90007,120.18,settled,2026-07-02 14:00:00,stripe
+pay_90008,118.77,settled,2026-07-02 15:00:00,unknown_gateway
+pay_90009,119.88,settled,2026-07-02 16:00:00,adyen
+pay_90009,119.88,settled,2026-07-02 16:00:00,adyen
+pay_90010,-180.33,review,2026-07-02 17:00:00,unknown_gateway
+pay_90011,122.50,settled,2026-07-02 18:00:00,stripe

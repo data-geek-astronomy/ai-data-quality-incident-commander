@@ -1,0 +1,29 @@
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(47, 212, 193, 0.28);
+  color: #fff;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0c1118;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2d3a48;
+  border: 3px solid #0c1118;
+  border-radius: 999px;
+}

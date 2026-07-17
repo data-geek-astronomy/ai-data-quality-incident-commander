@@ -1,0 +1,14 @@
+order_id,customer_id,order_total,status,created_at,region
+ord_10001,cust_301,82.40,paid,2026-07-01 09:00:00,west
+ord_10002,cust_302,91.10,paid,2026-07-01 10:00:00,east
+ord_10003,cust_303,,paid,2026-07-01 11:00:00,south
+ord_10004,cust_304,,pending,2026-07-01 12:00:00,central
+ord_10005,cust_305,712.00,chargeback_unknown,2026-07-01 13:00:00,west
+ord_10006,cust_306,698.50,chargeback_unknown,2026-07-01 14:00:00,west
+ord_10007,cust_307,77.90,paid,not-a-date,east
+ord_10008,cust_308,84.30,paid,2026-07-01 16:00:00,northwest
+ord_10009,cust_309,88.00,paid,2026-07-01 17:00:00,south
+ord_10009,cust_309,88.00,paid,2026-07-01 17:00:00,south
+ord_10010,cust_310,93.20,refunded,2026-07-01 18:00:00,central
+ord_10011,cust_311,,paid,2026-07-01 19:00:00,west
+ord_10012,cust_312,705.00,chargeback_unknown,2026-07-01 20:00:00,west
