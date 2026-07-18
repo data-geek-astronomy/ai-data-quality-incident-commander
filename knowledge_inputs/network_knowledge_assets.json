@@ -1,0 +1,131 @@
+{
+  "assets": [
+    {
+      "id": "rb-edge-failover",
+      "title": "Edge Router Failover Runbook",
+      "asset_type": "runbook",
+      "metadata": {
+        "service": "Edge Routing",
+        "owner": "Network Operations",
+        "steward": "Priya N.",
+        "freshness_date": "2026-06-20T00:00:00+00:00",
+        "status": "approved",
+        "lineage": "Confluence NET-RUN-118 -> GitOps runbook mirror",
+        "retrieval_tags": ["bgp", "edge", "failover", "router", "incident"],
+        "source_system": "synthetic_confluence"
+      },
+      "content": "Purpose: restore regional edge routing when a primary border router fails or withdraws production prefixes. Scope: Phoenix and Dallas edge routers supporting customer VPN, public ingress, and partner interconnect traffic.\n\nTrigger conditions: BGP neighbor down for more than 180 seconds, route dampening alert, packet loss greater than 3 percent across two probes, or traffic imbalance above 70/30 between paired edge routers. Validate the alert in telemetry before making changes.\n\nProcedure: open the routing dashboard, confirm the affected peer, compare active BGP paths against the last approved configuration, and verify that the standby router has the expected prefix list. If the primary router is isolated, disable only the affected peer group and allow the standby path to become preferred. Monitor route convergence for five minutes and confirm that synthetic transactions recover.\n\nRollback: re-enable the original peer group only after interface health, optical power, and BGP keepalive stability are confirmed. Escalate to Network Architecture if the same peer fails twice within one hour. Owner must update the incident record, configuration lineage, and freshness date after the event."
+    },
+    {
+      "id": "sop-firewall-change",
+      "title": "Firewall Rule Change SOP",
+      "asset_type": "sop",
+      "metadata": {
+        "service": "Network Security",
+        "owner": "Security Network Engineering",
+        "steward": "Marco L.",
+        "freshness_date": "2026-05-18T00:00:00+00:00",
+        "status": "approved",
+        "lineage": "ServiceNow CHG template -> policy exception registry",
+        "retrieval_tags": ["firewall", "change", "approval", "rollback"],
+        "source_system": "synthetic_servicenow"
+      },
+      "content": "All production firewall rule changes require a linked service owner, business justification, source and destination inventory IDs, expiration date, and rollback plan. Emergency changes must be reviewed within one business day.\n\nImplementation steps: validate the requested ports against the approved service catalog, check for overlapping rules, run the change through policy simulation, and attach simulation evidence to the change record. Apply the change during the approved window and monitor denied traffic, accepted traffic, and rule hit counts.\n\nQuality controls: block changes when owner, expiration, or service mapping metadata is missing. Detect stale rules by scanning for zero hits over 90 days or expired exceptions. Escalate unowned rules to the Network Security steward for remediation."
+    },
+    {
+      "id": "std-telemetry-schema",
+      "title": "Network Telemetry Metadata Standard",
+      "asset_type": "standard",
+      "metadata": {
+        "service": "Network Observability",
+        "owner": "Data Knowledge Team",
+        "steward": "Asha V.",
+        "freshness_date": "2026-07-01T00:00:00+00:00",
+        "status": "approved",
+        "lineage": "Enterprise data standard DK-204",
+        "retrieval_tags": ["telemetry", "metadata", "lineage", "freshness", "schema"],
+        "source_system": "synthetic_policy_portal"
+      },
+      "content": "Telemetry streams prepared for AI use must include device_id, interface_id, service, region, environment, metric_name, metric_value, unit, sample_time, source_system, pipeline_version, and owner. The steward is accountable for metadata accuracy and lineage.\n\nFreshness expectations: critical packet loss, latency, interface error, BGP state, and CPU metrics must arrive within five minutes. Configuration snapshots must refresh at least every 24 hours. Documentation and runbook knowledge must be reviewed every 180 days.\n\nPreventative controls: schema validation runs before publish, required metadata is enforced in CI, and invalid units are rejected. Detective controls: freshness monitors, null-rate checks, duplicate device checks, unexpected metric detection, and owner coverage reports run every hour. Issues must produce a remediation ticket with source, owner, severity, and corrective action."
+    },
+    {
+      "id": "cfg-bgp-template",
+      "title": "Approved BGP Edge Configuration Template",
+      "asset_type": "configuration",
+      "metadata": {
+        "service": "Edge Routing",
+        "owner": "Network Architecture",
+        "steward": "Lena R.",
+        "freshness_date": "2026-04-09T00:00:00+00:00",
+        "status": "approved",
+        "lineage": "Git repository net-configs/templates/bgp-edge.yaml",
+        "retrieval_tags": ["bgp", "configuration", "template", "prefix-list"],
+        "source_system": "synthetic_git"
+      },
+      "content": "Template intent: standardize eBGP peer groups for customer-facing edge routers. Required fields are local_asn, peer_asn, peer_ip, service, region, max_prefix, prefix_list_in, prefix_list_out, route_map_in, route_map_out, and owner.\n\nValidation: max_prefix must be lower than the circuit-specific threshold. Prefix lists must reference approved route objects. Route maps must tag learned routes with service, region, and environment communities. Missing owner, missing lineage, or unmanaged prefix lists block promotion.\n\nRollback: previous committed router configuration must be available in Git and in the network automation archive. After deployment, monitor BGP state, accepted prefixes, rejected prefixes, and route churn for ten minutes."
+    },
+    {
+      "id": "tel-core-summary",
+      "title": "Core Network Telemetry Health Summary",
+      "asset_type": "telemetry",
+      "metadata": {
+        "service": "Core Switching",
+        "owner": "Network Observability",
+        "steward": "Chen M.",
+        "freshness_date": "2026-07-15T00:00:00+00:00",
+        "status": "approved",
+        "lineage": "Kafka telemetry.core.metrics -> warehouse net_observability.core_health",
+        "retrieval_tags": ["telemetry", "packet-loss", "latency", "interface-errors"],
+        "source_system": "synthetic_warehouse"
+      },
+      "content": "The core switching health model aggregates packet loss, interface errors, latency, device CPU, memory, and link utilization every five minutes. The model joins telemetry to device inventory so every metric has region, site, service, environment, and owner metadata.\n\nReadiness controls: records without device_id or owner are quarantined before publish. Freshness alerts fire when no metric batch lands within ten minutes. Duplicate interface records are detected by device_id, interface_id, metric_name, and sample_time.\n\nConsumers: AI triage agents may use this summary to prioritize incidents, but they must cite the telemetry source and avoid recommending configuration changes unless a runbook or approved standard supports the action."
+    },
+    {
+      "id": "ir-dns-latency",
+      "title": "Incident Record: Regional DNS Latency Spike",
+      "asset_type": "incident_record",
+      "metadata": {
+        "service": "DNS",
+        "owner": "Network Operations",
+        "steward": "Priya N.",
+        "freshness_date": "2026-06-02T00:00:00+00:00",
+        "status": "approved",
+        "lineage": "PagerDuty INC-44218 -> postmortem registry",
+        "retrieval_tags": ["dns", "latency", "incident", "postmortem"],
+        "source_system": "synthetic_pagerduty"
+      },
+      "content": "Summary: DNS latency increased in the west region after a resolver pool was shifted behind a partially degraded load balancer. Customer impact lasted 18 minutes and affected login and service discovery.\n\nDetection: telemetry showed p95 DNS latency above 220 ms and synthetic probes failed from two west coast sites. The incident was confirmed by comparing the load balancer health feed, resolver CPU metrics, and recent configuration changes.\n\nCorrective action: drain the degraded load balancer pool, restore resolver distribution, and verify query success from synthetic probes. Prevention: add a detective control that links resolver latency alerts to load balancer pool health and owner metadata. The runbook owner must review this incident during the next DNS knowledge refresh."
+    },
+    {
+      "id": "pol-ai-context",
+      "title": "AI Context Use Policy for Network Operations",
+      "asset_type": "policy",
+      "metadata": {
+        "service": "Network Services",
+        "owner": "Enterprise AI Governance",
+        "steward": "Data Knowledge Team",
+        "freshness_date": "2026-07-10T00:00:00+00:00",
+        "status": "approved",
+        "lineage": "Enterprise AI control library AIC-17",
+        "retrieval_tags": ["ai", "governance", "context", "approval", "retrieval"],
+        "source_system": "synthetic_policy_portal"
+      },
+      "content": "AI agents may use network operations context only when the source is owned, fresh, supportable, and traceable. Approved sources include runbooks, SOPs, configuration templates, telemetry summaries, postmortems, service catalogs, and standards that carry owner and lineage metadata.\n\nThe model response must cite retrieved context when recommending operational actions. Draft or stale content can be used for discovery but must not be used as authoritative grounding for change execution. Sensitive configuration secrets must be excluded before indexing.\n\nGovernance controls: every AI-ready asset needs owner, steward, freshness date, lineage, retrieval tags, status, and usage guidance. Detective checks must monitor stale context, missing metadata, duplicate knowledge, unsupported recommendations, and unapproved assets in the index."
+    },
+    {
+      "id": "sop-vpn-certificate-renewal",
+      "title": "VPN Certificate Renewal SOP",
+      "asset_type": "sop",
+      "metadata": {
+        "service": "Remote Access VPN",
+        "owner": "",
+        "freshness_date": "2025-10-12T00:00:00+00:00",
+        "status": "review",
+        "lineage": "",
+        "retrieval_tags": ["vpn", "certificate", "renewal"],
+        "source_system": "synthetic_sharepoint"
+      },
+      "content": "Renew VPN gateway certificates before expiration. Check certificate inventory, submit the renewal request, install the new certificate on the passive gateway first, fail over traffic, and install on the active gateway. Verify client authentication, monitor failed logins, and rollback by restoring the previous certificate bundle if authentication failures increase. Escalate renewal blockers to the remote access service manager."
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+.git
+.env
+.env.local
+backend/.env
+backend/data
+frontend/node_modules
+__pycache__
+*.pyc
+.pytest_cache
+.DS_Store
+industrial_ml_projects
+ruview
+ruview-firmware
+terminal-bench-3
+.claude

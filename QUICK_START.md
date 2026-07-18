@@ -1,4 +1,4 @@
-# AI Data Quality Incident Commander Quick Start
+# Aegis Knowledge Hub Quick Start
 
 ## 1. Install backend dependencies
 
@@ -11,15 +11,14 @@ python -m pip install -r requirements.txt
 
 ```bash
 cd "/Users/aravindkumar/Research agent/backend"
-export OPENAI_API_KEY="your_key_here"   # optional
 uvicorn main:app --reload --port 8000
 ```
 
-Or use `backend/.env`:
+Optional LLM refinement:
 
 ```bash
-OPENAI_API_KEY=your_key_here
-OPENAI_MODEL=gpt-4o-mini
+export OPENAI_API_KEY="your_key_here"
+export OPENAI_MODEL="gpt-4o-mini"
 ```
 
 ## 3. Start the frontend
@@ -30,18 +29,8 @@ npm install
 npm start
 ```
 
-## 4. Open the app
+## 4. Try the project
 
-Visit `http://localhost:3000`.
+Open `http://localhost:3000`, re-index the synthetic inputs, inspect readiness issues, search for `edge router failover rollback`, and ask one of the starter questions.
 
-## 5. Test the workflow
-
-Run one of the built-in incident drills:
-
-- Commerce Orders
-- Payments Ledger
-- Product Events
-
-Then inspect the incident detail panel, change the status, and generate a postmortem.
-
-Sample CSVs are in `sample_uploads/`.
+Synthetic inputs live in `knowledge_inputs/network_knowledge_assets.json`.

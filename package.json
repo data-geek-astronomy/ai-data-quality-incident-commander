@@ -1,7 +1,7 @@
 {
-  "name": "ai-data-quality-incident-commander",
+  "name": "aegis-knowledge-hub",
   "version": "1.0.0",
-  "description": "Full-stack AI data reliability app for detecting data quality incidents, recommending fixes, and generating postmortems.",
+  "description": "AI-ready network knowledge hub for governed context assets, retrieval, and grounded answers.",
   "main": "index.js",
   "scripts": {
     "test": "cd backend && python -m pytest",

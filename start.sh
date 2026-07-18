@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ -z "$OPENAI_API_KEY" ]; then
-  echo "OPENAI_API_KEY is not set. Continuing with deterministic root-cause briefs."
+  echo "OPENAI_API_KEY is not set. Continuing with deterministic grounded answers."
 fi
 
 echo "Starting backend…"

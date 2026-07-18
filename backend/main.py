@@ -1,32 +1,54 @@
-import io
 import json
+import math
 import os
+import re
 import sqlite3
 import uuid
+from collections import Counter, defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-import numpy as np
-import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 try:
     from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - optional local convenience.
+except ImportError:  # pragma: no cover
     load_dotenv = None
 
 try:
     from openai import OpenAI
-except ImportError:  # pragma: no cover - app works without an LLM key.
+except ImportError:  # pragma: no cover
     OpenAI = None
 
 if load_dotenv is not None:
     load_dotenv(Path(__file__).resolve().parent / ".env")
 
-app = FastAPI(title="AI Data Quality Incident Commander")
+ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
+DATA_DIR = ROOT / "data"
+DB_PATH = DATA_DIR / "knowledge_hub.db"
+INPUT_DIR = PROJECT_ROOT / "knowledge_inputs"
+FRONTEND_BUILD = PROJECT_ROOT / "frontend" / "build"
+DATA_DIR.mkdir(exist_ok=True)
+INPUT_DIR.mkdir(exist_ok=True)
+
+AssetType = Literal["runbook", "sop", "policy", "standard", "configuration", "telemetry", "incident_record"]
+Status = Literal["draft", "review", "approved", "stale"]
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if not asset_rows() and list(INPUT_DIR.glob("*.json")):
+        ingest_assets(read_input_files())
+    yield
+
+
+app = FastAPI(title="Aegis Knowledge Hub", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,70 +58,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
-DB_PATH = DATA_DIR / "incidents.db"
-SAMPLE_DIR = ROOT.parent / "sample_uploads"
-DATA_DIR.mkdir(exist_ok=True)
 
-DatasetKind = Literal["orders", "payments", "events"]
+class AskRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=500)
+    top_k: int = Field(default=4, ge=1, le=8)
 
 
-class StatusUpdate(BaseModel):
-    status: Literal["open", "investigating", "fix_ready", "resolved"]
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=300)
+    asset_type: str | None = None
+    service: str | None = None
+    owner: str | None = None
+    min_readiness: int = Field(default=0, ge=0, le=100)
+    top_k: int = Field(default=8, ge=1, le=20)
 
 
-class IncidentResponse(BaseModel):
-    incident: dict[str, Any]
-
-
-DATASET_CONFIG: dict[str, dict[str, Any]] = {
-    "orders": {
-        "label": "Commerce Orders",
-        "required_columns": ["order_id", "customer_id", "order_total", "status", "created_at", "region"],
-        "primary_key": "order_id",
-        "timestamp": "created_at",
-        "business_kpi": "order_total",
-        "expected_categories": {"status": ["paid", "pending", "refunded"], "region": ["west", "east", "south", "central"]},
-    },
-    "payments": {
-        "label": "Payments Ledger",
-        "required_columns": ["payment_id", "account_id", "amount", "payment_status", "processed_at", "processor"],
-        "primary_key": "payment_id",
-        "timestamp": "processed_at",
-        "business_kpi": "amount",
-        "expected_categories": {"payment_status": ["settled", "failed", "review"], "processor": ["stripe", "adyen", "paypal"]},
-    },
-    "events": {
-        "label": "Product Events",
-        "required_columns": ["event_id", "user_id", "event_name", "session_duration", "event_time", "platform"],
-        "primary_key": "event_id",
-        "timestamp": "event_time",
-        "business_kpi": "session_duration",
-        "expected_categories": {"event_name": ["signup", "search", "checkout", "cancel"], "platform": ["ios", "android", "web"]},
-    },
-}
-
-SAMPLE_UPLOADS: dict[str, dict[str, str]] = {
-    "orders": {
-        "filename": "orders_broken.csv",
-        "name": "Commerce Orders",
-        "scenario": "Revenue report changed overnight",
-        "overview": "A small order table with duplicate orders, missing totals, invalid dates, and unexpected customer states.",
-    },
-    "payments": {
-        "filename": "payments_broken.csv",
-        "name": "Payments Ledger",
-        "scenario": "Payments ledger looks wrong",
-        "overview": "A finance ledger with missing account information, negative charges, repeated payments, and a new processor value.",
-    },
-    "events": {
-        "filename": "product_events_broken.csv",
-        "name": "Product Events",
-        "scenario": "Product analytics dropped",
-        "overview": "A product events table with broken timestamps, repeated events, unknown SDK values, and collapsed session duration.",
-    },
-}
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def db() -> sqlite3.Connection:
@@ -107,332 +82,268 @@ def db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS incidents (
+        CREATE TABLE IF NOT EXISTS assets (
             id TEXT PRIMARY KEY,
-            dataset_name TEXT NOT NULL,
-            dataset_kind TEXT NOT NULL,
-            severity TEXT NOT NULL,
+            title TEXT NOT NULL,
+            asset_type TEXT NOT NULL,
+            service TEXT NOT NULL,
+            owner TEXT,
+            source TEXT NOT NULL,
+            freshness_date TEXT,
             status TEXT NOT NULL,
+            metadata TEXT NOT NULL,
+            content TEXT NOT NULL,
+            readiness_score INTEGER NOT NULL,
+            issues TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            payload TEXT NOT NULL
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chunks (
+            id TEXT PRIMARY KEY,
+            asset_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            metadata TEXT NOT NULL,
+            FOREIGN KEY(asset_id) REFERENCES assets(id)
         )
         """
     )
     return conn
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def tokenize(text: str) -> list[str]:
+    stop_words = {
+        "the", "and", "for", "with", "that", "this", "from", "into", "when", "then", "than", "are", "was", "were",
+        "has", "have", "had", "will", "shall", "must", "can", "not", "all", "any", "per", "via", "use", "using",
+    }
+    return [word for word in re.findall(r"[a-z0-9_/-]+", text.lower()) if len(word) > 2 and word not in stop_words]
 
 
-def make_sample(kind: DatasetKind, broken: bool = False) -> pd.DataFrame:
-    rng = np.random.default_rng(42 if not broken else 99)
-    rows = 240
-    dates = pd.date_range("2026-07-01", periods=rows, freq="h")
-
-    if kind == "orders":
-        df = pd.DataFrame(
-            {
-                "order_id": [f"ord_{i:05d}" for i in range(rows)],
-                "customer_id": [f"cust_{rng.integers(1000, 1160)}" for _ in range(rows)],
-                "order_total": rng.normal(86, 18, rows).round(2).clip(4),
-                "status": rng.choice(["paid", "pending", "refunded"], rows, p=[0.82, 0.12, 0.06]),
-                "created_at": dates.astype(str),
-                "region": rng.choice(["west", "east", "south", "central"], rows, p=[0.34, 0.28, 0.21, 0.17]),
-            }
-        )
-        if broken:
-            df.loc[20:42, "order_total"] = np.nan
-            df.loc[110:118, "order_total"] = 700
-            df.loc[160:175, "status"] = "chargeback_unknown"
-            df = pd.concat([df, df.iloc[5:14]], ignore_index=True)
-    elif kind == "payments":
-        df = pd.DataFrame(
-            {
-                "payment_id": [f"pay_{i:05d}" for i in range(rows)],
-                "account_id": [f"acct_{rng.integers(500, 660)}" for _ in range(rows)],
-                "amount": rng.normal(125, 28, rows).round(2).clip(2),
-                "payment_status": rng.choice(["settled", "failed", "review"], rows, p=[0.88, 0.08, 0.04]),
-                "processed_at": dates.astype(str),
-                "processor": rng.choice(["stripe", "adyen", "paypal"], rows, p=[0.58, 0.25, 0.17]),
-            }
-        )
-        if broken:
-            df.loc[50:72, "processor"] = "unknown_gateway"
-            df.loc[80:94, "amount"] = -abs(df.loc[80:94, "amount"])
-            df = df.drop(columns=["account_id"])
-    else:
-        df = pd.DataFrame(
-            {
-                "event_id": [f"evt_{i:05d}" for i in range(rows)],
-                "user_id": [f"user_{rng.integers(2000, 2190)}" for _ in range(rows)],
-                "event_name": rng.choice(["signup", "search", "checkout", "cancel"], rows, p=[0.12, 0.55, 0.27, 0.06]),
-                "session_duration": rng.normal(180, 46, rows).round(1).clip(1),
-                "event_time": dates.astype(str),
-                "platform": rng.choice(["ios", "android", "web"], rows, p=[0.42, 0.35, 0.23]),
-            }
-        )
-        if broken:
-            df.loc[0:60, "session_duration"] = 0
-            df.loc[130:165, "platform"] = "unknown_sdk"
-            df.loc[190:220, "event_time"] = "not-a-date"
-
-    return df
+def chunk_text(text: str, max_words: int = 120) -> list[str]:
+    paragraphs = [item.strip() for item in re.split(r"\n\s*\n", text) if item.strip()]
+    chunks: list[str] = []
+    current: list[str] = []
+    for paragraph in paragraphs:
+        words = paragraph.split()
+        if current and len(current) + len(words) > max_words:
+            chunks.append(" ".join(current))
+            current = []
+        current.extend(words)
+    if current:
+        chunks.append(" ".join(current))
+    return chunks or [text[:1000]]
 
 
-def percent(value: float) -> float:
-    return round(float(value) * 100, 2)
-
-
-def issue(title: str, severity: str, detail: str, metric: float, column: str | None = None) -> dict[str, Any]:
+def parse_asset(payload: dict[str, Any], source: str) -> dict[str, Any]:
+    metadata = payload.get("metadata", {})
+    content = payload.get("content", "")
+    title = str(payload.get("title") or metadata.get("title") or source)
+    asset_id = str(payload.get("id") or re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or uuid.uuid4())[:80]
     return {
+        "id": asset_id,
         "title": title,
-        "severity": severity,
-        "detail": detail,
-        "metric": round(float(metric), 3),
-        "column": column,
+        "asset_type": str(payload.get("asset_type") or metadata.get("asset_type") or "runbook"),
+        "service": str(metadata.get("service") or payload.get("service") or "Network Services"),
+        "owner": metadata.get("owner"),
+        "source": source,
+        "freshness_date": metadata.get("freshness_date"),
+        "status": str(metadata.get("status") or "draft"),
+        "metadata": metadata,
+        "content": content,
     }
 
 
-def severity_rank(severity: str) -> int:
-    return {"low": 1, "medium": 2, "high": 3, "critical": 4}.get(severity, 1)
+def readiness(asset: dict[str, Any]) -> tuple[int, list[dict[str, str]]]:
+    issues: list[dict[str, str]] = []
+    score = 100
+    required_metadata = ["owner", "service", "freshness_date", "steward", "lineage", "retrieval_tags"]
+    for field_name in required_metadata:
+        value = asset["metadata"].get(field_name)
+        if value in (None, "", []):
+            score -= 10
+            issues.append({"control": "metadata", "severity": "high", "message": f"Missing {field_name} metadata."})
+
+    if len(asset["content"].split()) < 80:
+        score -= 12
+        issues.append({"control": "knowledge_quality", "severity": "medium", "message": "Content is too thin for reliable grounding."})
+
+    if asset["status"] != "approved":
+        score -= 8
+        issues.append({"control": "governance", "severity": "medium", "message": "Asset is not approved for model use."})
+
+    if asset.get("freshness_date"):
+        try:
+            fresh = datetime.fromisoformat(str(asset["freshness_date"]).replace("Z", "+00:00"))
+            age_days = (datetime.now(timezone.utc) - fresh).days
+            if age_days > 180:
+                score -= 18
+                issues.append({"control": "freshness", "severity": "high", "message": f"Freshness date is {age_days} days old."})
+        except ValueError:
+            score -= 10
+            issues.append({"control": "freshness", "severity": "medium", "message": "Freshness date is not ISO formatted."})
+    else:
+        score -= 12
+
+    if not re.search(r"(rollback|escalat|owner|validate|verify|monitor)", asset["content"], re.I):
+        score -= 8
+        issues.append({"control": "supportability", "severity": "medium", "message": "Missing operational support cues."})
+
+    return max(0, min(100, score)), issues
 
 
-def analyze_frame(df: pd.DataFrame, dataset_kind: DatasetKind, dataset_name: str) -> dict[str, Any]:
-    if df.empty:
-        raise HTTPException(status_code=400, detail="The dataset is empty.")
-
-    cfg = DATASET_CONFIG[dataset_kind]
-    issues: list[dict[str, Any]] = []
-    required = cfg["required_columns"]
-    missing = [col for col in required if col not in df.columns]
-    if missing:
-        issues.append(issue("Schema contract broken", "critical", f"Missing required columns: {', '.join(missing)}.", len(missing)))
-
-    duplicate_ratio = df.duplicated().mean()
-    if duplicate_ratio > 0.01:
-        sev = "critical" if duplicate_ratio > 0.08 else "high"
-        issues.append(issue("Duplicate records detected", sev, f"{percent(duplicate_ratio)}% of rows are exact duplicates.", duplicate_ratio))
-
-    key = cfg["primary_key"]
-    if key in df.columns:
-        key_dupes = df[key].duplicated().mean()
-        if key_dupes > 0:
-            issues.append(issue("Primary key collision", "critical", f"{percent(key_dupes)}% of {key} values repeat.", key_dupes, key))
-
-    for col in df.columns:
-        null_ratio = df[col].isna().mean()
-        if null_ratio > 0.05:
-            sev = "critical" if null_ratio > 0.20 else "high"
-            issues.append(issue("Null spike", sev, f"{col} has {percent(null_ratio)}% null values.", null_ratio, col))
-
-    numeric_cols = list(df.select_dtypes(include=[np.number]).columns)
-    for col in numeric_cols:
-        series = df[col].dropna()
-        if len(series) < 20:
-            continue
-        q1, q3 = series.quantile([0.25, 0.75])
-        iqr = q3 - q1
-        if iqr == 0:
-            zero_ratio = (series == 0).mean()
-            if zero_ratio > 0.20:
-                issues.append(issue("Metric collapse", "high", f"{col} is stuck at zero for {percent(zero_ratio)}% of numeric rows.", zero_ratio, col))
-            continue
-        outlier_ratio = ((series < q1 - 3 * iqr) | (series > q3 + 3 * iqr)).mean()
-        if outlier_ratio > 0.03:
-            sev = "high" if outlier_ratio < 0.10 else "critical"
-            issues.append(issue("Numeric outlier burst", sev, f"{col} has {percent(outlier_ratio)}% extreme values.", outlier_ratio, col))
-        if (series < 0).mean() > 0.02 and col in ["amount", "order_total", "session_duration"]:
-            issues.append(issue("Invalid negative business metric", "critical", f"{col} contains negative values.", (series < 0).mean(), col))
-
-    timestamp_col = cfg["timestamp"]
-    if timestamp_col in df.columns:
-        parsed = pd.to_datetime(df[timestamp_col], errors="coerce", utc=True)
-        bad_dates = parsed.isna().mean()
-        if bad_dates > 0.03:
-            issues.append(issue("Timestamp parsing failure", "high", f"{timestamp_col} has {percent(bad_dates)}% invalid timestamps.", bad_dates, timestamp_col))
-
-    for col, expected_values in cfg["expected_categories"].items():
-        if col not in df.columns:
-            continue
-        unexpected = ~df[col].dropna().astype(str).isin(expected_values)
-        ratio = unexpected.mean() if len(unexpected) else 0
-        if ratio > 0.03:
-            sev = "critical" if ratio > 0.15 else "high"
-            issues.append(issue("Unexpected category drift", sev, f"{col} contains values outside the expected contract.", ratio, col))
-
-    baseline = make_sample(dataset_kind, broken=False)
-    kpi = cfg["business_kpi"]
-    psi = 0.0
-    if kpi in df.columns and kpi in baseline.columns:
-        psi = population_stability_index(baseline[kpi], pd.to_numeric(df[kpi], errors="coerce"))
-        if psi > 0.25:
-            issues.append(issue("Distribution shift", "high", f"{kpi} distribution shifted materially from the healthy baseline.", psi, kpi))
-
-    max_rank = max([severity_rank(item["severity"]) for item in issues], default=1)
-    severity = {1: "low", 2: "medium", 3: "high", 4: "critical"}[max_rank]
-    if len(issues) >= 5 and severity != "critical":
-        severity = "high"
-
-    root_cause = generate_root_cause(dataset_name, dataset_kind, issues)
-    fixes = generate_fixes(dataset_kind, issues)
-    incident_id = str(uuid.uuid4())[:8]
-    created_at = now_iso()
-    incident = {
-        "id": incident_id,
-        "dataset_name": dataset_name,
-        "dataset_kind": dataset_kind,
-        "dataset_label": cfg["label"],
-        "created_at": created_at,
-        "status": "open" if issues else "resolved",
-        "severity": severity if issues else "low",
-        "health_score": max(0, 100 - sum(severity_rank(item["severity"]) * 9 for item in issues)),
-        "row_count": int(len(df)),
-        "column_count": int(len(df.columns)),
-        "issues": issues,
-        "root_cause": root_cause,
-        "recommended_fixes": fixes,
-        "evidence": {
-            "columns": list(df.columns),
-            "numeric_columns": numeric_cols,
-            "distribution_shift_psi": round(float(psi), 3),
-            "sample_rows": df.head(5).replace({np.nan: None}).to_dict(orient="records"),
-        },
-        "timeline": [
-            {"time": created_at, "event": "Dataset analyzed"},
-            {"time": created_at, "event": f"{len(issues)} quality issues detected"},
-            {"time": created_at, "event": "AI incident brief generated"},
-        ],
-    }
-    save_incident(incident)
-    return incident
+def read_input_files() -> list[dict[str, Any]]:
+    assets: list[dict[str, Any]] = []
+    for path in sorted(INPUT_DIR.glob("*.json")):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not parse {path.name}: {exc}") from exc
+        records = raw if isinstance(raw, list) else raw.get("assets", [raw])
+        for record in records:
+            assets.append(parse_asset(record, path.name))
+    return assets
 
 
-def population_stability_index(expected: pd.Series, actual: pd.Series, bins: int = 10) -> float:
-    expected = pd.to_numeric(expected, errors="coerce").dropna()
-    actual = pd.to_numeric(actual, errors="coerce").dropna()
-    if len(expected) < 10 or len(actual) < 10:
-        return 0.0
-    cuts = np.percentile(expected, np.linspace(0, 100, bins + 1))
-    cuts = np.unique(cuts)
-    if len(cuts) < 3:
-        return 0.0
-    expected_counts, _ = np.histogram(expected, bins=cuts)
-    actual_counts, _ = np.histogram(actual, bins=cuts)
-    expected_pct = np.maximum(expected_counts / max(expected_counts.sum(), 1), 0.001)
-    actual_pct = np.maximum(actual_counts / max(actual_counts.sum(), 1), 0.001)
-    return float(np.sum((actual_pct - expected_pct) * np.log(actual_pct / expected_pct)))
+def ingest_assets(assets: list[dict[str, Any]]) -> dict[str, Any]:
+    with db() as conn:
+        conn.execute("DELETE FROM chunks")
+        conn.execute("DELETE FROM assets")
+        created = now_iso()
+        chunk_total = 0
+        for asset in assets:
+            score, issues = readiness(asset)
+            conn.execute(
+                """
+                INSERT INTO assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset["id"],
+                    asset["title"],
+                    asset["asset_type"],
+                    asset["service"],
+                    asset.get("owner"),
+                    asset["source"],
+                    asset.get("freshness_date"),
+                    asset["status"],
+                    json.dumps(asset["metadata"]),
+                    asset["content"],
+                    score,
+                    json.dumps(issues),
+                    created,
+                    created,
+                ),
+            )
+            for index, chunk in enumerate(chunk_text(asset["content"])):
+                chunk_id = f"{asset['id']}-{index}"
+                chunk_meta = {
+                    "title": asset["title"],
+                    "asset_type": asset["asset_type"],
+                    "service": asset["service"],
+                    "owner": asset.get("owner"),
+                    "source": asset["source"],
+                    "readiness_score": score,
+                }
+                conn.execute("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)", (chunk_id, asset["id"], index, chunk, json.dumps(chunk_meta)))
+                chunk_total += 1
+    return {"assets_ingested": len(assets), "chunks_indexed": chunk_total}
 
 
-def generate_root_cause(dataset_name: str, dataset_kind: str, issues: list[dict[str, Any]]) -> str:
-    if not issues:
-        return "No active incident detected. The dataset matches the configured contract and baseline expectations."
+def asset_rows() -> list[dict[str, Any]]:
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM assets ORDER BY readiness_score ASC, title ASC").fetchall()
+    return [
+        {
+            **dict(row),
+            "metadata": json.loads(row["metadata"]),
+            "issues": json.loads(row["issues"]),
+        }
+        for row in rows
+    ]
 
-    fallback = (
-        f"{dataset_name} needs attention before it is used for reporting or automation. "
-        f"The clearest signal is: {issues[0]['detail']} "
-        "This usually means a recent data source, app release, or scheduled import changed unexpectedly. "
-        "Pause downstream use, review the newest records first, and republish once the source is corrected."
-    )
+
+def chunk_rows() -> list[dict[str, Any]]:
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT chunks.*, assets.title, assets.asset_type, assets.service, assets.owner, assets.readiness_score
+            FROM chunks
+            JOIN assets ON chunks.asset_id = assets.id
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def score_chunks(query: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    query_terms = Counter(tokenize(query))
+    if not query_terms:
+        return []
+    docs = [tokenize(row["text"] + " " + row["title"] + " " + row["service"] + " " + row["asset_type"]) for row in rows]
+    doc_freq: Counter[str] = Counter()
+    for tokens in docs:
+        doc_freq.update(set(tokens))
+
+    scored: list[dict[str, Any]] = []
+    total_docs = max(len(rows), 1)
+    for row, tokens in zip(rows, docs):
+        term_counts = Counter(tokens)
+        score = 0.0
+        for term, q_count in query_terms.items():
+            if term not in term_counts:
+                continue
+            idf = math.log((1 + total_docs) / (1 + doc_freq[term])) + 1
+            score += q_count * term_counts[term] * idf
+        score = score / math.sqrt(max(len(tokens), 1))
+        if score > 0:
+            scored.append({**row, "score": round(score, 4), "metadata": json.loads(row["metadata"])})
+    return sorted(scored, key=lambda item: item["score"], reverse=True)
+
+
+def summarize_context(question: str, matches: list[dict[str, Any]]) -> str:
+    if not matches:
+        return "I could not find enough approved context for that question. Add or improve the related knowledge asset, then re-index."
+    sentences: list[str] = []
+    terms = set(tokenize(question))
+    for match in matches:
+        for sentence in re.split(r"(?<=[.!?])\s+", match["text"]):
+            sentence_terms = set(tokenize(sentence))
+            if terms & sentence_terms:
+                sentences.append(sentence.strip())
+            if len(sentences) >= 5:
+                break
+        if len(sentences) >= 5:
+            break
+    if not sentences:
+        sentences = [matches[0]["text"][:500]]
+    answer = " ".join(sentences)
+    return answer[:1200]
+
+
+def generate_answer(question: str, matches: list[dict[str, Any]]) -> str:
+    fallback = summarize_context(question, matches)
     api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key or OpenAI is None:
+    if not api_key or OpenAI is None or not matches:
         return fallback
-
     try:
         client = OpenAI(api_key=api_key)
+        context = "\n\n".join(
+            f"Source: {item['title']} ({item['asset_type']}, readiness {item['readiness_score']})\n{item['text']}"
+            for item in matches[:4]
+        )
         response = client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            temperature=0.2,
+            temperature=0.1,
             messages=[
-                {"role": "system", "content": "You are a concise senior data reliability incident commander."},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "dataset": dataset_name,
-                            "dataset_kind": dataset_kind,
-                            "issues": issues[:8],
-                    "task": "Explain the likely root cause and immediate response in 4 plain-English sentences for a business user. Avoid jargon.",
-                        }
-                    ),
-                },
+                {"role": "system", "content": "Answer from the supplied network operations context. Be concise and cite source titles."},
+                {"role": "user", "content": json.dumps({"question": question, "context": context})},
             ],
         )
         return response.choices[0].message.content.strip()
     except Exception:
         return fallback
-
-
-def generate_fixes(dataset_kind: str, issues: list[dict[str, Any]]) -> list[dict[str, str]]:
-    fixes = []
-    for item in issues[:6]:
-        col = item.get("column") or "affected_column"
-        title = item["title"]
-        if "Schema" in title:
-            fixes.append(
-                {
-                    "title": "Restore schema contract",
-                    "sql": "-- Add the missing source field or update the model contract before publishing the table.",
-                    "python": "assert set(required_columns).issubset(df.columns)",
-                }
-            )
-        elif "Null" in title:
-            fixes.append(
-                {
-                    "title": f"Quarantine null-heavy rows in {col}",
-                    "sql": f"CREATE TABLE quarantine_{dataset_kind} AS SELECT * FROM raw_{dataset_kind} WHERE {col} IS NULL;",
-                    "python": f"clean_df = df[df['{col}'].notna()].copy()",
-                }
-            )
-        elif "Duplicate" in title or "Primary" in title:
-            fixes.append(
-                {
-                    "title": "Deduplicate by stable key",
-                    "sql": "SELECT * EXCEPT(row_num) FROM (SELECT *, ROW_NUMBER() OVER(PARTITION BY id ORDER BY updated_at DESC) row_num FROM source) WHERE row_num = 1;",
-                    "python": "df = df.drop_duplicates(keep='last')",
-                }
-            )
-        elif "category" in title.lower():
-            fixes.append(
-                {
-                    "title": f"Map or block unexpected {col} values",
-                    "sql": f"SELECT {col}, COUNT(*) FROM raw_{dataset_kind} GROUP BY {col} ORDER BY COUNT(*) DESC;",
-                    "python": f"df['{col}'] = df['{col}'].where(df['{col}'].isin(allowed_values), 'unknown')",
-                }
-            )
-        else:
-            fixes.append(
-                {
-                    "title": f"Validate {col} before publish",
-                    "sql": f"SELECT APPROX_QUANTILES({col}, 10) FROM raw_{dataset_kind};",
-                    "python": f"df['{col}'] = pd.to_numeric(df['{col}'], errors='coerce')",
-                }
-            )
-    return fixes
-
-
-def save_incident(incident: dict[str, Any]) -> None:
-    with db() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO incidents VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                incident["id"],
-                incident["dataset_name"],
-                incident["dataset_kind"],
-                incident["severity"],
-                incident["status"],
-                incident["created_at"],
-                json.dumps(incident),
-            ),
-        )
-
-
-def read_incident(incident_id: str) -> dict[str, Any]:
-    with db() as conn:
-        row = conn.execute("SELECT payload FROM incidents WHERE id = ?", (incident_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Incident not found.")
-    return json.loads(row["payload"])
 
 
 @app.get("/health")
@@ -445,123 +356,106 @@ def config() -> dict[str, Any]:
     return {
         "openai_enabled": bool(os.getenv("OPENAI_API_KEY")) and OpenAI is not None,
         "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "input_dir": str(INPUT_DIR),
     }
 
 
-@app.get("/api/demo-datasets")
-def demo_datasets() -> dict[str, Any]:
+@app.post("/api/ingest")
+def ingest_from_inputs() -> dict[str, Any]:
+    assets = read_input_files()
+    if not assets:
+        raise HTTPException(status_code=404, detail="No JSON knowledge inputs found.")
+    return ingest_assets(assets)
+
+
+@app.get("/api/assets")
+def list_assets() -> dict[str, Any]:
+    return {"assets": asset_rows()}
+
+
+@app.get("/api/governance")
+def governance() -> dict[str, Any]:
+    assets = asset_rows()
+    if not assets:
+        return {"summary": {"asset_count": 0, "average_readiness": 0, "approved_count": 0, "issue_count": 0}, "by_type": [], "control_issues": []}
+    by_type: dict[str, list[int]] = defaultdict(list)
+    control_counts: Counter[str] = Counter()
+    for asset in assets:
+        by_type[asset["asset_type"]].append(asset["readiness_score"])
+        for item in asset["issues"]:
+            control_counts[item["control"]] += 1
     return {
-        "datasets": [
-            {"id": "orders", "name": "Commerce Orders", "description": "Null spike, duplicates, outliers, category drift."},
-            {"id": "payments", "name": "Payments Ledger", "description": "Missing schema field, negative amounts, gateway drift."},
-            {"id": "events", "name": "Product Events", "description": "Metric collapse, SDK drift, invalid timestamps."},
-        ]
+        "summary": {
+            "asset_count": len(assets),
+            "average_readiness": round(sum(item["readiness_score"] for item in assets) / len(assets)),
+            "approved_count": sum(1 for item in assets if item["status"] == "approved"),
+            "issue_count": sum(len(item["issues"]) for item in assets),
+        },
+        "by_type": [
+            {"asset_type": key, "count": len(values), "average_readiness": round(sum(values) / len(values))}
+            for key, values in sorted(by_type.items())
+        ],
+        "control_issues": [{"control": key, "count": value} for key, value in control_counts.most_common()],
     }
 
 
-@app.get("/api/sample-uploads")
-def sample_uploads() -> dict[str, Any]:
-    samples = []
-    for dataset_kind, sample in SAMPLE_UPLOADS.items():
-        path = SAMPLE_DIR / sample["filename"]
-        row_count = 0
-        columns: list[str] = []
-        if path.exists():
-            preview = pd.read_csv(path, nrows=5)
-            row_count = sum(1 for _ in path.open()) - 1
-            columns = list(preview.columns)
-        samples.append(
-            {
-                "id": dataset_kind,
-                "data_type": dataset_kind,
-                "name": sample["name"],
-                "filename": sample["filename"],
-                "scenario": sample["scenario"],
-                "overview": sample["overview"],
-                "row_count": row_count,
-                "columns": columns,
-            }
-        )
-    return {"samples": samples}
+@app.post("/api/search")
+def search(payload: SearchRequest) -> dict[str, Any]:
+    rows = chunk_rows()
+    if payload.asset_type:
+        rows = [row for row in rows if row["asset_type"] == payload.asset_type]
+    if payload.service:
+        rows = [row for row in rows if row["service"] == payload.service]
+    if payload.owner:
+        rows = [row for row in rows if row["owner"] == payload.owner]
+    rows = [row for row in rows if row["readiness_score"] >= payload.min_readiness]
+    return {"matches": score_chunks(payload.query, rows)[: payload.top_k]}
 
 
-@app.post("/api/analyze-demo/{dataset_kind}", response_model=IncidentResponse)
-def analyze_demo(dataset_kind: DatasetKind) -> dict[str, Any]:
-    incident = analyze_frame(make_sample(dataset_kind, broken=True), dataset_kind, f"demo_{dataset_kind}.csv")
-    return {"incident": incident}
+@app.post("/api/ask")
+def ask(payload: AskRequest) -> dict[str, Any]:
+    matches = score_chunks(payload.question, chunk_rows())[: payload.top_k]
+    return {"answer": generate_answer(payload.question, matches), "sources": matches}
 
 
-@app.post("/api/analyze-sample/{dataset_kind}", response_model=IncidentResponse)
-def analyze_sample_upload(dataset_kind: DatasetKind) -> dict[str, Any]:
-    sample = SAMPLE_UPLOADS[dataset_kind]
-    path = SAMPLE_DIR / sample["filename"]
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Sample file not found: {sample['filename']}")
-    df = pd.read_csv(path)
-    incident = analyze_frame(df, dataset_kind, sample["filename"])
-    return {"incident": incident}
+@app.post("/api/upload")
+async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
+    if not file.filename.lower().endswith((".json", ".md", ".txt")):
+        raise HTTPException(status_code=400, detail="Upload a JSON, Markdown, or text knowledge file.")
+    content = (await file.read()).decode("utf-8")
+    if file.filename.lower().endswith(".json"):
+        records = json.loads(content)
+        assets = [parse_asset(record, file.filename) for record in (records if isinstance(records, list) else records.get("assets", [records]))]
+    else:
+        assets = [
+            parse_asset(
+                {
+                    "title": file.filename,
+                    "asset_type": "runbook",
+                    "metadata": {"service": "Network Services", "status": "review", "source_system": "upload"},
+                    "content": content,
+                },
+                file.filename,
+            )
+        ]
+    existing = asset_rows()
+    all_assets = [
+        {
+            "id": item["id"],
+            "title": item["title"],
+            "asset_type": item["asset_type"],
+            "service": item["service"],
+            "owner": item["owner"],
+            "source": item["source"],
+            "freshness_date": item["freshness_date"],
+            "status": item["status"],
+            "metadata": item["metadata"],
+            "content": item["content"],
+        }
+        for item in existing
+    ] + assets
+    return ingest_assets(all_assets)
 
 
-@app.post("/api/analyze", response_model=IncidentResponse)
-async def analyze_upload(dataset_kind: DatasetKind = "orders", file: UploadFile = File(...)) -> dict[str, Any]:
-    if not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Upload a CSV file.")
-    content = await file.read()
-    try:
-        df = pd.read_csv(io.BytesIO(content))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not parse CSV: {exc}") from exc
-    incident = analyze_frame(df, dataset_kind, file.filename)
-    return {"incident": incident}
-
-
-@app.get("/api/incidents")
-def list_incidents() -> dict[str, Any]:
-    with db() as conn:
-        rows = conn.execute("SELECT payload FROM incidents ORDER BY created_at DESC LIMIT 50").fetchall()
-    return {"incidents": [json.loads(row["payload"]) for row in rows]}
-
-
-@app.get("/api/incidents/{incident_id}", response_model=IncidentResponse)
-def get_incident(incident_id: str) -> dict[str, Any]:
-    return {"incident": read_incident(incident_id)}
-
-
-@app.patch("/api/incidents/{incident_id}/status", response_model=IncidentResponse)
-def update_status(incident_id: str, payload: StatusUpdate) -> dict[str, Any]:
-    incident = read_incident(incident_id)
-    incident["status"] = payload.status
-    incident["timeline"].append({"time": now_iso(), "event": f"Status changed to {payload.status}"})
-    save_incident(incident)
-    return {"incident": incident}
-
-
-@app.get("/api/incidents/{incident_id}/postmortem")
-def postmortem(incident_id: str) -> dict[str, str]:
-    incident = read_incident(incident_id)
-    issue_lines = "\n".join(f"- {item['title']}: {item['detail']}" for item in incident["issues"])
-    fix_lines = "\n".join(f"- {item['title']}" for item in incident["recommended_fixes"])
-    markdown = f"""# Data Quality Incident Postmortem
-
-## Summary
-Dataset `{incident['dataset_name']}` triggered a `{incident['severity']}` incident with health score `{incident['health_score']}`.
-
-## Customer / Business Impact
-Downstream dashboards, ML features, and operational automations using `{incident['dataset_label']}` may receive incomplete or misleading data until the affected partition is remediated.
-
-## Detected Issues
-{issue_lines or "- No active issues detected."}
-
-## Likely Root Cause
-{incident['root_cause']}
-
-## Remediation Plan
-{fix_lines or "- Continue monitoring."}
-
-## Prevention
-- Add schema contract checks to CI and the ingestion job.
-- Block publish when critical quality checks fail.
-- Alert owners when drift exceeds the configured threshold.
-- Keep replayable raw partitions for fast rollback.
-"""
-    return {"markdown": markdown}
+if FRONTEND_BUILD.exists():
+    app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")

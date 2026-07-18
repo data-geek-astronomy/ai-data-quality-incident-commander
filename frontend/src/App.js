@@ -3,208 +3,93 @@ import './App.css';
 
 const API_BASE = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
 
-const datasetKinds = [
-  { id: 'orders', label: 'Commerce Orders' },
-  { id: 'payments', label: 'Payments Ledger' },
-  { id: 'events', label: 'Product Events' },
+const starterQuestions = [
+  'How do we handle edge router failover?',
+  'What metadata is required before AI can use telemetry?',
+  'What controls prevent stale or unowned network knowledge?',
+  'Can AI use draft or stale operational content for change execution?',
 ];
 
-const statusOptions = ['open', 'investigating', 'fix_ready', 'resolved'];
-
-const demoCopy = {
-  orders: {
-    headline: 'Revenue report changed overnight',
-    detail: 'Finds missing totals, duplicate orders, and unusual customer states before leaders see the wrong number.',
-  },
-  payments: {
-    headline: 'Payments ledger looks wrong',
-    detail: 'Spots broken fields, negative charges, and processor changes that can create finance noise.',
-  },
-  events: {
-    headline: 'Product analytics dropped',
-    detail: 'Detects tracking gaps, bad timestamps, and app events that stopped behaving normally.',
-  },
-};
-
-const statusLabels = {
-  open: 'New',
-  investigating: 'Reviewing',
-  fix_ready: 'Fix ready',
-  resolved: 'Resolved',
-};
-
-const issueLabels = {
-  'Schema contract broken': 'Required business field is missing',
-  'Duplicate records detected': 'Repeated records found',
-  'Primary key collision': 'Record IDs are repeating',
-  'Null spike': 'Important values are missing',
-  'Metric collapse': 'A key number stopped moving',
-  'Numeric outlier burst': 'Unexpected number spike',
-  'Invalid negative business metric': 'Negative value needs review',
-  'Timestamp parsing failure': 'Dates are not reading correctly',
-  'Unexpected category drift': 'New value appeared unexpectedly',
-  'Distribution shift': 'The pattern changed from normal',
-};
-
-function severityClass(value) {
-  return `severity severity-${value || 'low'}`;
+function scoreClass(score) {
+  if (score >= 90) return 'score-good';
+  if (score >= 75) return 'score-ok';
+  return 'score-risk';
 }
 
 function App() {
-  const [demoDatasets, setDemoDatasets] = useState([]);
-  const [sampleUploads, setSampleUploads] = useState([]);
-  const [incidents, setIncidents] = useState([]);
-  const [activeIncident, setActiveIncident] = useState(null);
-  const [selectedKind, setSelectedKind] = useState('orders');
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [selectedSample, setSelectedSample] = useState(null);
-  const [postmortem, setPostmortem] = useState('');
-  const [status, setStatus] = useState({ tone: 'idle', message: 'Ready. Choose a scenario to see the product in action.' });
+  const [assets, setAssets] = useState([]);
+  const [governance, setGovernance] = useState(null);
+  const [query, setQuery] = useState('edge router failover rollback');
+  const [question, setQuestion] = useState(starterQuestions[0]);
+  const [matches, setMatches] = useState([]);
+  const [answer, setAnswer] = useState('');
+  const [sources, setSources] = useState([]);
+  const [activeAsset, setActiveAsset] = useState(null);
+  const [notice, setNotice] = useState('Ready. The synthetic network knowledge corpus is loaded from knowledge_inputs/.');
   const [busy, setBusy] = useState('');
 
-  const summary = useMemo(() => {
-    const open = incidents.filter((item) => item.status !== 'resolved').length;
-    const critical = incidents.filter((item) => item.severity === 'critical').length;
-    const avgHealth = incidents.length
-      ? Math.round(incidents.reduce((total, item) => total + item.health_score, 0) / incidents.length)
-      : 100;
-    return { open, critical, avgHealth };
-  }, [incidents]);
+  const summary = governance?.summary || { asset_count: 0, average_readiness: 0, approved_count: 0, issue_count: 0 };
+  const services = useMemo(() => [...new Set(assets.map((asset) => asset.service))].sort(), [assets]);
 
   useEffect(() => {
-    loadDemos();
-    loadSampleUploads();
-    loadIncidents();
+    refresh();
   }, []);
 
   async function request(path, options = {}) {
     const response = await fetch(`${API_BASE}${path}`, options);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(data.detail || data.message || 'Request failed');
-    }
+    if (!response.ok) throw new Error(data.detail || 'Request failed');
     return data;
   }
 
-  async function loadDemos() {
+  async function refresh() {
+    setBusy('refresh');
     try {
-      const data = await request('/api/demo-datasets');
-      setDemoDatasets(data.datasets || []);
-    } catch {
-      setDemoDatasets([]);
-    }
-  }
-
-  async function loadSampleUploads() {
-    try {
-      const data = await request('/api/sample-uploads');
-      setSampleUploads(data.samples || []);
-    } catch {
-      setSampleUploads([]);
-    }
-  }
-
-  async function loadIncidents() {
-    try {
-      const data = await request('/api/incidents');
-      setIncidents(data.incidents || []);
-      if (!activeIncident && data.incidents?.length) {
-        setActiveIncident(data.incidents[0]);
-      }
-    } catch {
-      setIncidents([]);
-    }
-  }
-
-  async function analyzeDemo(kind) {
-    setBusy(`demo-${kind}`);
-    setStatus({ tone: 'pending', message: 'Checking the data and building an incident brief...' });
-    setPostmortem('');
-    try {
-      const data = await request(`/api/analyze-demo/${kind}`, { method: 'POST' });
-      setActiveIncident(data.incident);
-      await loadIncidents();
-      setStatus({ tone: 'success', message: `Found ${data.incident.issues.length} risks and prepared a response plan.` });
+      await request('/api/ingest', { method: 'POST' });
+      const [assetData, governanceData] = await Promise.all([request('/api/assets'), request('/api/governance')]);
+      setAssets(assetData.assets || []);
+      setGovernance(governanceData);
+      setActiveAsset(assetData.assets?.[0] || null);
+      setNotice('Knowledge index refreshed from synthetic runbooks, SOPs, standards, policies, configs, telemetry, and incidents.');
     } catch (error) {
-      setStatus({ tone: 'error', message: error.message });
+      setNotice(error.message);
     } finally {
       setBusy('');
     }
   }
 
-  async function analyzeSample(sample) {
-    setSelectedKind(sample.data_type);
-    setSelectedSample(sample);
-    setSelectedFile(null);
-    setBusy(`sample-${sample.id}`);
-    setPostmortem('');
-    setStatus({ tone: 'pending', message: `${sample.filename} selected. Reviewing sample data now...` });
+  async function runSearch(event) {
+    event?.preventDefault();
+    setBusy('search');
     try {
-      const data = await request(`/api/analyze-sample/${sample.id}`, { method: 'POST' });
-      setActiveIncident(data.incident);
-      await loadIncidents();
-      setStatus({ tone: 'success', message: `${sample.name} sample loaded and reviewed automatically.` });
-    } catch (error) {
-      setStatus({ tone: 'error', message: error.message });
-    } finally {
-      setBusy('');
-    }
-  }
-
-  async function uploadDataset(event) {
-    event.preventDefault();
-    if (!selectedFile) {
-      setStatus({ tone: 'error', message: 'Choose a CSV file first.' });
-      return;
-    }
-    const form = new FormData();
-    form.append('file', selectedFile);
-    setBusy('upload');
-    setPostmortem('');
-    setStatus({ tone: 'pending', message: `Reviewing ${selectedFile.name}...` });
-    try {
-      const data = await request(`/api/analyze?dataset_kind=${selectedKind}`, {
+      const data = await request('/api/search', {
         method: 'POST',
-        body: form,
-      });
-      setActiveIncident(data.incident);
-      await loadIncidents();
-      setStatus({ tone: 'success', message: 'Review complete. The response plan is ready.' });
-    } catch (error) {
-      setStatus({ tone: 'error', message: error.message });
-    } finally {
-      setBusy('');
-    }
-  }
-
-  async function updateIncidentStatus(nextStatus) {
-    if (!activeIncident) return;
-    setBusy('status');
-    try {
-      const data = await request(`/api/incidents/${activeIncident.id}/status`, {
-        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: nextStatus }),
+        body: JSON.stringify({ query, min_readiness: 0, top_k: 8 }),
       });
-      setActiveIncident(data.incident);
-      await loadIncidents();
-      setStatus({ tone: 'success', message: `Status updated to ${statusLabels[nextStatus]}.` });
+      setMatches(data.matches || []);
+      setNotice(`Retrieved ${data.matches?.length || 0} chunks with metadata and readiness signals.`);
     } catch (error) {
-      setStatus({ tone: 'error', message: error.message });
+      setNotice(error.message);
     } finally {
       setBusy('');
     }
   }
 
-  async function generatePostmortem() {
-    if (!activeIncident) return;
-    setBusy('postmortem');
+  async function askQuestion(event) {
+    event?.preventDefault();
+    setBusy('ask');
     try {
-      const data = await request(`/api/incidents/${activeIncident.id}/postmortem`);
-      setPostmortem(data.markdown || '');
-      setStatus({ tone: 'success', message: 'Summary generated and ready to share.' });
+      const data = await request('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, top_k: 4 }),
+      });
+      setAnswer(data.answer || '');
+      setSources(data.sources || []);
+      setNotice('Answer generated from retrieved network knowledge with source evidence.');
     } catch (error) {
-      setStatus({ tone: 'error', message: error.message });
+      setNotice(error.message);
     } finally {
       setBusy('');
     }
@@ -212,281 +97,178 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="hero">
-        <nav className="nav">
-          <strong>Clearline AI</strong>
-          <span>Data Reliability Copilot</span>
-        </nav>
-        <div className="hero-grid">
-          <div>
-            <p className="eyebrow">For teams that run on trustworthy data</p>
-            <h1>Catch bad data before it breaks business decisions.</h1>
-            <p className="subtitle">
-              Clearline watches incoming datasets, explains what changed, recommends the next action,
-              and turns every issue into a clean response brief.
-            </p>
-            <div className="hero-actions">
-              <a href="#workspace">Try live demo</a>
-              <span>No setup required</span>
-            </div>
-          </div>
-          <div className="hero-card">
-            <div className="pulse-row">
-              <span className="pulse-dot" />
-              Live data review
-            </div>
-            <strong>{summary.avgHealth}</strong>
-            <p>Trust score across reviewed datasets</p>
-            <div className="mini-bars">
-              <span />
-              <span />
-              <span />
-              <span />
-            </div>
-          </div>
+      <header className="topbar">
+        <div>
+          <strong>Aegis Knowledge Hub</strong>
+          <span>AI-ready network operations context</span>
         </div>
+        <button type="button" onClick={refresh} disabled={busy !== ''}>
+          {busy === 'refresh' ? 'Indexing...' : 'Re-index inputs'}
+        </button>
       </header>
 
-      <main id="workspace" className="main-grid">
-        <section className="panel command-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="section-label">Live product demo</p>
-              <h2>Choose a business moment to protect</h2>
-            </div>
+      <main className="workspace">
+        <section className="overview">
+          <div>
+            <p className="eyebrow">Data Knowledge pillar demo</p>
+            <h1>Govern, score, retrieve, and answer from network knowledge.</h1>
+            <p>
+              This portfolio app turns operational documents, configuration notes, telemetry summaries, and incident
+              records into traceable context assets for AI and agentic workflows.
+            </p>
           </div>
-
-          <div className="demo-grid">
-            {demoDatasets.map((dataset) => (
-              <button
-                className="demo-card"
-                key={dataset.id}
-                type="button"
-                onClick={() => analyzeDemo(dataset.id)}
-                disabled={busy !== ''}
-              >
-                <span>{dataset.name}</span>
-                <strong>{demoCopy[dataset.id]?.headline || dataset.name}</strong>
-                <p>{demoCopy[dataset.id]?.detail || dataset.description}</p>
-                <em>{busy === `demo-${dataset.id}` ? 'Reviewing...' : 'Review data'}</em>
-              </button>
-            ))}
-          </div>
-
-          <form className="upload-box" onSubmit={uploadDataset}>
-            <label>
-              Data type
-              <select value={selectedKind} onChange={(event) => setSelectedKind(event.target.value)}>
-                {datasetKinds.map((kind) => (
-                  <option key={kind.id} value={kind.id}>
-                    {kind.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Bring your own CSV
-              <input
-                type="file"
-                accept=".csv"
-                onChange={(event) => {
-                  setSelectedFile(event.target.files?.[0] || null);
-                  setSelectedSample(null);
-                }}
-              />
-            </label>
-            {selectedSample ? (
-              <div className="selected-sample">
-                <span>Selected sample</span>
-                <strong>{selectedSample.filename}</strong>
-              </div>
-            ) : null}
-            <button type="submit" disabled={busy !== ''}>
-              {busy === 'upload' ? 'Reviewing...' : 'Review upload'}
-            </button>
-          </form>
-
-          <div className="sample-upload-panel">
-            <div>
-              <p className="section-label">Ready sample data</p>
-              <h3>Click a sample to load and run it</h3>
-            </div>
-            <div className="sample-upload-grid">
-              {sampleUploads.map((sample) => (
-                <button
-                  className={`sample-upload-card ${selectedSample?.id === sample.id ? 'selected' : ''}`}
-                  key={sample.id}
-                  type="button"
-                  onClick={() => analyzeSample(sample)}
-                  disabled={busy !== ''}
-                >
-                  <span>{sample.filename}</span>
-                  <strong>{sample.scenario}</strong>
-                  <p>{sample.overview}</p>
-                  <div className="sample-meta">
-                    <em>{sample.row_count} rows</em>
-                    <em>{sample.columns.length} fields</em>
-                  </div>
-                  <b>{busy === `sample-${sample.id}` ? 'Running...' : 'Use this sample'}</b>
-                </button>
-              ))}
-            </div>
+          <div className="score-card">
+            <span>AI readiness</span>
+            <strong>{summary.average_readiness}</strong>
+            <small>{summary.asset_count} indexed assets</small>
           </div>
         </section>
 
-        <section className={`status-strip status-${status.tone}`}>{status.message}</section>
-
-        <section className="panel metric-panel">
+        <section className="metric-grid">
           <article>
-            <span>Active reviews</span>
-            <strong>{summary.open}</strong>
+            <span>Assets</span>
+            <strong>{summary.asset_count}</strong>
           </article>
           <article>
-            <span>Urgent risks</span>
-            <strong>{summary.critical}</strong>
+            <span>Approved</span>
+            <strong>{summary.approved_count}</strong>
           </article>
           <article>
-            <span>Trust score</span>
-            <strong>{summary.avgHealth}</strong>
+            <span>Control Issues</span>
+            <strong>{summary.issue_count}</strong>
+          </article>
+          <article>
+            <span>Services</span>
+            <strong>{services.length}</strong>
           </article>
         </section>
 
-        <section className="panel incident-list-panel">
-          <div className="panel-heading compact">
-            <div>
-              <p className="section-label">Recent reviews</p>
-              <h2>Response queue</h2>
-            </div>
-          </div>
-          <div className="incident-list">
-            {incidents.length === 0 ? (
-              <p className="empty-state">No reviews yet. Start with a live demo above.</p>
-            ) : (
-              incidents.map((incident) => (
-                <button
-                  type="button"
-                  key={incident.id}
-                  className={`incident-row ${activeIncident?.id === incident.id ? 'selected' : ''}`}
-                  onClick={() => {
-                    setActiveIncident(incident);
-                    setPostmortem('');
-                  }}
-                >
-                  <span className={severityClass(incident.severity)}>{incident.severity}</span>
-                  <strong>{incident.dataset_name}</strong>
-                  <em>{statusLabels[incident.status] || incident.status}</em>
-                </button>
-              ))
-            )}
-          </div>
-        </section>
+        <section className="notice">{notice}</section>
 
-        <section className="panel detail-panel">
-          {!activeIncident ? (
-            <div className="empty-detail">
-              <p className="section-label">Response plan</p>
-              <h2>Select a review to see what changed and what to do next.</h2>
-            </div>
-          ) : (
-            <>
-              <div className="detail-header">
+        <section className="grid">
+          <div className="left-column">
+            <section className="panel">
+              <div className="panel-heading">
                 <div>
-                  <p className="section-label">Review {activeIncident.id}</p>
-                  <h2>{activeIncident.dataset_label}</h2>
-                  <p>{activeIncident.dataset_name}</p>
-                </div>
-                <div className="health-ring">
-                  <span>{activeIncident.health_score}</span>
-                  <small>trust</small>
+                  <p className="eyebrow">Knowledge assets</p>
+                  <h2>Readiness queue</h2>
                 </div>
               </div>
-
-              <div className="status-actions">
-                {statusOptions.map((option) => (
+              <div className="asset-list">
+                {assets.map((asset) => (
                   <button
-                    key={option}
                     type="button"
-                    className={activeIncident.status === option ? 'active' : ''}
-                    onClick={() => updateIncidentStatus(option)}
-                    disabled={busy !== ''}
+                    className={`asset-row ${activeAsset?.id === asset.id ? 'selected' : ''}`}
+                    key={asset.id}
+                    onClick={() => setActiveAsset(asset)}
                   >
-                    {statusLabels[option]}
+                    <span className={`score-pill ${scoreClass(asset.readiness_score)}`}>{asset.readiness_score}</span>
+                    <div>
+                      <strong>{asset.title}</strong>
+                      <em>{asset.asset_type} / {asset.service}</em>
+                    </div>
                   </button>
                 ))}
               </div>
+            </section>
 
-              <div className="current-stage">
-                <span>Current stage</span>
-                <strong>{statusLabels[activeIncident.status] || activeIncident.status}</strong>
-                <p>
-                  {activeIncident.status === 'open'
-                    ? 'A new review is waiting for someone to look at it.'
-                    : activeIncident.status === 'investigating'
-                      ? 'The team is reviewing the signals and likely cause.'
-                      : activeIncident.status === 'fix_ready'
-                        ? 'Recommended actions are ready to apply or hand off.'
-                        : 'This review is resolved and ready to archive.'}
-                </p>
+            <section className="panel">
+              <p className="eyebrow">Control coverage</p>
+              <h2>Governance findings</h2>
+              <div className="control-list">
+                {(governance?.control_issues || []).map((item) => (
+                  <article key={item.control}>
+                    <span>{item.control.replace('_', ' ')}</span>
+                    <strong>{item.count}</strong>
+                  </article>
+                ))}
               </div>
+            </section>
+          </div>
 
-              <div className="insight-card">
-                <span className={severityClass(activeIncident.severity)}>{activeIncident.severity}</span>
-                <h3>What likely happened</h3>
-                <p>{activeIncident.root_cause}</p>
-              </div>
-
-              <div className="split-grid">
-                <div>
-                  <h3>Signals found</h3>
-                  <div className="stack">
-                    {activeIncident.issues.map((item) => (
-                      <article className="issue-card" key={`${item.title}-${item.column}-${item.metric}`}>
-                        <span className={severityClass(item.severity)}>{item.severity}</span>
-                        <strong>{issueLabels[item.title] || item.title}</strong>
-                        <p>{item.detail}</p>
-                      </article>
-                    ))}
+          <section className="panel detail-panel">
+            {activeAsset ? (
+              <>
+                <div className="asset-header">
+                  <div>
+                    <p className="eyebrow">{activeAsset.asset_type}</p>
+                    <h2>{activeAsset.title}</h2>
+                    <p>{activeAsset.service} / {activeAsset.owner || 'Unowned'}</p>
                   </div>
+                  <span className={`big-score ${scoreClass(activeAsset.readiness_score)}`}>{activeAsset.readiness_score}</span>
                 </div>
-
-                <div>
-                  <h3>Recommended actions</h3>
-                  <div className="stack">
-                    {activeIncident.recommended_fixes.map((fix) => (
-                      <article className="fix-card" key={fix.title}>
-                        <strong>{fix.title}</strong>
-                        <details>
-                          <summary>Implementation detail</summary>
-                          <code>{fix.python}</code>
-                        </details>
+                <div className="metadata-grid">
+                  <article><span>Steward</span><strong>{activeAsset.metadata.steward || 'Missing'}</strong></article>
+                  <article><span>Freshness</span><strong>{activeAsset.freshness_date || 'Missing'}</strong></article>
+                  <article><span>Status</span><strong>{activeAsset.status}</strong></article>
+                  <article><span>Lineage</span><strong>{activeAsset.metadata.lineage || 'Missing'}</strong></article>
+                </div>
+                <div className="issue-stack">
+                  {activeAsset.issues.length ? (
+                    activeAsset.issues.map((issue) => (
+                      <article key={`${issue.control}-${issue.message}`}>
+                        <strong>{issue.control.replace('_', ' ')}</strong>
+                        <p>{issue.message}</p>
                       </article>
-                    ))}
-                  </div>
+                    ))
+                  ) : (
+                    <article><strong>Ready for model use</strong><p>Required metadata, freshness, lineage, and supportability checks passed.</p></article>
+                  )}
                 </div>
+                <pre className="content-preview">{activeAsset.content}</pre>
+              </>
+            ) : (
+              <div className="empty-state">Index the sample corpus to inspect assets.</div>
+            )}
+          </section>
+        </section>
+
+        <section className="qa-grid">
+          <section className="panel">
+            <p className="eyebrow">Retrieval</p>
+            <h2>Search indexed context</h2>
+            <form className="search-form" onSubmit={runSearch}>
+              <input value={query} onChange={(event) => setQuery(event.target.value)} />
+              <button type="submit" disabled={busy !== ''}>{busy === 'search' ? 'Searching...' : 'Search'}</button>
+            </form>
+            <div className="match-list">
+              {matches.map((match) => (
+                <article key={match.id}>
+                  <span>{match.score} relevance / readiness {match.readiness_score}</span>
+                  <strong>{match.title}</strong>
+                  <p>{match.text}</p>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel">
+            <p className="eyebrow">Grounded answer</p>
+            <h2>Ask the knowledge hub</h2>
+            <div className="question-chips">
+              {starterQuestions.map((item) => (
+                <button type="button" key={item} onClick={() => setQuestion(item)}>{item}</button>
+              ))}
+            </div>
+            <form className="ask-form" onSubmit={askQuestion}>
+              <textarea value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} />
+              <button type="submit" disabled={busy !== ''}>{busy === 'ask' ? 'Answering...' : 'Ask'}</button>
+            </form>
+            {answer ? (
+              <div className="answer-card">
+                <strong>Answer</strong>
+                <p>{answer}</p>
               </div>
-
-              <div className="evidence-grid">
-                <article>
-                  <span>Rows</span>
-                  <strong>{activeIncident.row_count}</strong>
+            ) : null}
+            <div className="source-list">
+              {sources.map((source) => (
+                <article key={source.id}>
+                  <strong>{source.title}</strong>
+                  <span>{source.asset_type} / readiness {source.readiness_score}</span>
                 </article>
-                <article>
-                  <span>Columns</span>
-                  <strong>{activeIncident.column_count}</strong>
-                </article>
-                <article>
-                  <span>Change</span>
-                  <strong>{activeIncident.evidence.distribution_shift_psi}</strong>
-                </article>
-              </div>
-
-              <button className="postmortem-button" type="button" onClick={generatePostmortem} disabled={busy !== ''}>
-                {busy === 'postmortem' ? 'Generating...' : 'Generate executive summary'}
-              </button>
-
-              {postmortem ? <pre className="postmortem">{postmortem}</pre> : null}
-            </>
-          )}
+              ))}
+            </div>
+          </section>
         </section>
       </main>
     </div>
